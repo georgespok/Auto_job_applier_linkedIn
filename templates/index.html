@@ -62,11 +62,14 @@
                     <th class="sl-column">Sl No</th>
                     <th>Job Title</th>
                     <th>Company</th>  
+                    <th>Location</th>
+                    <th>Compensation</th>
                     <th>HR Contact</th>
                     <th>
                         External Link
                         <button class="sort-button" onclick="sortByExternalLink()">↕️</button>
                     </th> 
+                    <th>Date Applied</th>
                     <th class="applied-column">Applied</th>
                 </tr>
             </thead>
@@ -102,6 +105,14 @@
             const companyCell = document.createElement('td');
             companyCell.textContent = job.Company;
             row.appendChild(companyCell);
+
+            const locationCell = document.createElement('td');
+            locationCell.textContent = job.Location || 'N/A';
+            row.appendChild(locationCell);
+
+            const compensationCell = document.createElement('td');
+            compensationCell.textContent = job.Compensation || 'Unknown';
+            row.appendChild(compensationCell);
             
             // HR Name with link
             const hrCell = document.createElement('td');
@@ -143,6 +154,7 @@
                         if (response.ok) {
                             appliedCell.innerHTML = '<span class="tick">✓</span>';
                             job.Date_Applied = new Date().toISOString();
+                            dateCell.textContent = formatDateApplied(job.Date_Applied);
                         }
                     } catch (error) {
                         console.error('Error updating applied date:', error);
@@ -158,9 +170,27 @@
                 extCell.textContent = 'N/A';
             }
             row.appendChild(extCell);
+
+            const dateCell = document.createElement('td');
+            dateCell.textContent = formatDateApplied(job.Date_Applied);
+            row.appendChild(dateCell);
+
             row.appendChild(appliedCell);
             
             return row;
+        }
+
+        function formatDateApplied(value) {
+            if (!value || value === 'Pending') {
+                return 'Pending';
+            }
+
+            const parsed = new Date(value);
+            if (Number.isNaN(parsed.getTime())) {
+                return value;
+            }
+
+            return parsed.toLocaleString();
         }
 
         function sortByExternalLink() {
@@ -184,16 +214,41 @@
             });
         }
 
-        fetch('http://localhost:5000/applied-jobs')
-            .then(response => response.json())
+        function showMessage(message) {
+            const tbody = document.getElementById('jobsBody');
+            tbody.innerHTML = '';
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 9;
+            cell.textContent = message;
+            row.appendChild(cell);
+            tbody.appendChild(row);
+        }
+
+        fetch('/applied-jobs')
+            .then(async response => {
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to load applied jobs');
+                }
+                return data;
+            })
             .then(jobs => {
                 jobsData = jobs;
                 const tbody = document.getElementById('jobsBody');
+                tbody.innerHTML = '';
+                if (!jobs.length) {
+                    showMessage('No applied jobs found.');
+                    return;
+                }
                 jobs.forEach((job, index) => {
                     tbody.appendChild(createTableRow(job, index));
                 });
             })
-            .catch(error => console.error('Error:', error));
+            .catch(error => {
+                console.error('Error:', error);
+                showMessage(error.message);
+            });
     </script>
 </body>
 </html>

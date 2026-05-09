@@ -28,22 +28,34 @@ from selenium.webdriver.support.ui import WebDriverWait
 from modules.helpers import find_default_profile_directory, critical_error_log, print_lg
 from selenium.common.exceptions import SessionNotCreatedException
 
+def add_user_data_dir(options, profile_dir: str) -> None:
+    '''
+    Adds a Chrome user data directory after making sure it exists.
+    '''
+    make_directories([profile_dir])
+    options.add_argument(f"--user-data-dir={profile_dir}")
+
+
 def createChromeSession(isRetry: bool = False):
     make_directories([file_name,failed_file_name,logs_folder_path+"/screenshots",default_resume_path,generated_resume_path+"/temp"])
     # Set up WebDriver with Chrome Profile
     options = uc.ChromeOptions() if stealth_mode else Options()
-    if run_in_background:   options.add_argument("--headless")
+    if run_in_background:   options.add_argument("--headless=new")
     if disable_extensions:  options.add_argument("--disable-extensions")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
 
     print_lg("IF YOU HAVE MORE THAN 10 TABS OPENED, PLEASE CLOSE OR BOOKMARK THEM! Or it's highly likely that application will just open browser and not do anything!")
     profile_dir = find_default_profile_directory()
+    temp_profile_dir = get_default_temp_profile()
     if isRetry:
-        print_lg("Will login with a guest profile, browsing history will not be saved in the browser!")
+        print_lg("Retrying with a dedicated guest Chrome profile, browsing history will not be saved in your main browser profile!")
+        add_user_data_dir(options, temp_profile_dir)
     elif profile_dir and not safe_mode:
         options.add_argument(f"--user-data-dir={profile_dir}")
     else:
         print_lg("Logging in with a guest profile, Web history will not be saved!")
-        options.add_argument(f"--user-data-dir={get_default_temp_profile()}")
+        add_user_data_dir(options, temp_profile_dir)
     if stealth_mode:
         # try: 
         #     driver = uc.Chrome(driver_executable_path="C:\\Program Files\\Google\\Chrome\\chromedriver-win64\\chromedriver.exe", options=options)
@@ -53,6 +65,7 @@ def createChromeSession(isRetry: bool = False):
             driver = uc.Chrome(options=options)
     else: driver = webdriver.Chrome(options=options) #, service=Service(executable_path="C:\\Program Files\\Google\\Chrome\\chromedriver-win64\\chromedriver.exe"))
     driver.maximize_window()
+    print_lg(f"Chrome session created successfully. Browser version: {driver.capabilities.get('browserVersion', 'unknown')}")
     wait = WebDriverWait(driver, 5)
     actions = ActionChains(driver)
     return options, driver, actions, wait

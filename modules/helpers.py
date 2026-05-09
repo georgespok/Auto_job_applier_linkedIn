@@ -61,7 +61,7 @@ def get_default_temp_profile() -> str:
     # Thanks to https://github.com/vinodbavage31 for suggestion!
     home = pathlib.Path.home()
     if sys.platform.startswith('win'):
-        return "--user-data-dir=C:\\temp\\auto-job-apply-profile"
+        return "C:\\temp\\auto-job-apply-profile"
     elif sys.platform.startswith('linux'):
         return str(home / ".auto-job-apply-profile")
     return str(home / "Library" / "Application Support" / "Google" / "Chrome" / "auto-job-apply-profile")
@@ -166,7 +166,7 @@ def buffer(speed: int=0) -> None:
         return sleep(randint(18,round(speed)*10)*0.1)
     
 
-def manual_login_retry(is_logged_in: callable, limit: int = 2) -> None:
+def manual_login_retry(is_logged_in: callable, limit: int = 2) -> bool:
     '''
     Function to ask and validate manual login
     '''
@@ -180,7 +180,9 @@ def manual_login_retry(is_logged_in: callable, limit: int = 2) -> None:
             button = "Skip Confirmation"
             message = 'If you\'re seeing this message even after you logged in, Click "{}". Seems like auto login confirmation failed!'.format(button)
         count += 1
-        if alert(message, "Login Required", button) and count > limit: return
+        if alert(message, "Login Required", button) and count > limit:
+            return is_logged_in()
+    return True
 
 
 

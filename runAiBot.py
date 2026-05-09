@@ -44,12 +44,18 @@ from config.settings import *
 from modules.open_chrome import *
 from modules.helpers import *
 from modules.clickers_and_finders import *
+from modules.job_history import find_previously_applied_match, load_applied_jobs_history, make_applied_job_fingerprint, normalize_job_id
 from modules.validator import validate_config
 
 if use_AI:
-    from modules.ai.openaiConnections import ai_create_openai_client, ai_extract_skills, ai_answer_question, ai_close_openai_client
-    from modules.ai.deepseekConnections import deepseek_create_client, deepseek_extract_skills, deepseek_answer_question
-    from modules.ai.geminiConnections import gemini_create_client, gemini_extract_skills, gemini_answer_question
+    ai_provider_name = ai_provider.lower()
+    if ai_provider_name == "openai":
+        from modules.ai.openaiConnections import ai_create_openai_client, ai_extract_skills, ai_answer_question, ai_close_openai_client
+    elif ai_provider_name == "deepseek":
+        from modules.ai.openaiConnections import ai_close_openai_client
+        from modules.ai.deepseekConnections import deepseek_create_client, deepseek_extract_skills, deepseek_answer_question
+    elif ai_provider_name == "gemini":
+        from modules.ai.geminiConnections import gemini_create_client, gemini_extract_skills, gemini_answer_question
 
 from typing import Literal
 
@@ -79,6 +85,7 @@ external_jobs_count = 0
 failed_count = 0
 skip_count = 0
 dailyEasyApplyLimitReached = False
+keep_browser_open_on_exit = False
 
 re_experience = re.compile(r'[(]?\s*(\d+)\s*[)]?\s*[-to]*\s*\d*[+]*\s*year[s]?', re.IGNORECASE)
 
@@ -108,15 +115,17 @@ def is_logged_in_LN() -> bool:
     Function to check if user is logged-in in LinkedIn
     * Returns: `True` if user is logged-in or `False` if not
     '''
-    if driver.current_url == "https://www.linkedin.com/feed/": return True
+    current_url = driver.current_url.lower()
+    if current_url.startswith("https://www.linkedin.com/feed"): return True
+    if "linkedin.com/checkpoint" in current_url or "linkedin.com/challenge" in current_url or "linkedin.com/login" in current_url: return False
     if try_linkText(driver, "Sign in"): return False
-    if try_xp(driver, '//button[@type="submit" and contains(text(), "Sign in")]'):  return False
+    if try_xp(driver, '//button[@type="submit" and contains(text(), "Sign in")]', False): return False
     if try_linkText(driver, "Join now"): return False
     print_lg("Didn't find Sign in link, so assuming user is logged in!")
     return True
 
 
-def login_LN() -> None:
+def login_LN() -> bool:
     '''
     Function to login for LinkedIn
     * Tries to login using given `username` and `password` from `secrets.py`
@@ -128,8 +137,7 @@ def login_LN() -> None:
     if username == "username@example.com" and password == "example_password":
         pyautogui.alert("User did not configure username and password in secrets.py, hence can't login automatically! Please login manually!", "Login Manually","Okay")
         print_lg("User did not configure username and password in secrets.py, hence can't login automatically! Please login manually!")
-        manual_login_retry(is_logged_in_LN, 2)
-        return
+        return manual_login_retry(is_logged_in_LN, 2)
     try:
         wait.until(EC.presence_of_element_located((By.LINK_TEXT, "Forgot password?")))
         try:
@@ -154,12 +162,13 @@ def login_LN() -> None:
 
     try:
         # Wait until successful redirect, indicating successful login
-        wait.until(EC.url_to_be("https://www.linkedin.com/feed/")) # wait.until(EC.presence_of_element_located((By.XPATH, '//button[normalize-space(.)="Start a post"]')))
-        return print_lg("Login successful!")
+        WebDriverWait(driver, 20).until(lambda _: is_logged_in_LN()) # wait.until(EC.presence_of_element_located((By.XPATH, '//button[normalize-space(.)="Start a post"]')))
+        print_lg("Login successful!")
+        return True
     except Exception as e:
-        print_lg("Seems like login attempt failed! Possibly due to wrong credentials or already logged in! Try logging in manually!")
+        print_lg(f"Seems like login attempt failed! Current URL: {driver.current_url}. Possibly due to wrong credentials, LinkedIn checkpoint, or already logged in. Try logging in manually!")
         # print_lg(e)
-        manual_login_retry(is_logged_in_LN, 2)
+        return manual_login_retry(is_logged_in_LN, 2)
 #>
 
 
@@ -169,13 +178,8 @@ def get_applied_job_ids() -> set[str]:
     Function to get a `set` of applied job's Job IDs
     * Returns a set of Job IDs from existing applied jobs history csv file
     '''
-    job_ids: set[str] = set()
-    try:
-        with open(file_name, 'r', encoding='utf-8') as file:
-            reader = csv.reader(file)
-            for row in reader:
-                job_ids.add(row[0])
-    except FileNotFoundError:
+    job_ids, _ = load_applied_jobs_history(file_name)
+    if not os.path.exists(file_name):
         print_lg(f"The CSV file '{file_name}' does not exist.")
     return job_ids
 
@@ -294,16 +298,22 @@ def get_job_main_details(job: WebElement, blacklisted_companies: set, rejected_j
     job_details_button = job.find_element(By.TAG_NAME, 'a')  # job.find_element(By.CLASS_NAME, "job-card-list__title")  # Problem in India
     scroll_to_view(driver, job_details_button, True)
     job_id = job.get_dom_attribute('data-occludable-job-id')
-    title = job_details_button.text
-    title = title[:title.find("\n")]
-    # company = job.find_element(By.CLASS_NAME, "job-card-container__primary-description").text
-    # work_location = job.find_element(By.CLASS_NAME, "job-card-container__metadata-item").text
-    other_details = job.find_element(By.CLASS_NAME, 'artdeco-entity-lockup__subtitle').text
-    index = other_details.find(' · ')
-    company = other_details[:index]
-    work_location = other_details[index+3:]
-    work_style = work_location[work_location.rfind('(')+1:work_location.rfind(')')]
-    work_location = work_location[:work_location.rfind('(')].strip()
+    title_text = job_details_button.text.strip()
+    title = title_text.splitlines()[0].strip() if title_text else ""
+    company = job.find_element(By.CLASS_NAME, "artdeco-entity-lockup__subtitle").text.strip()
+    work_location = "Unknown"
+    work_style = "Unknown"
+    metadata_items = job.find_elements(By.CLASS_NAME, "job-card-container__metadata-item")
+    if metadata_items:
+        work_location = metadata_items[0].text.strip()
+    elif ' · ' in company:
+        other_details = company
+        index = other_details.find(' · ')
+        company = other_details[:index].strip()
+        work_location = other_details[index+3:].strip()
+    if '(' in work_location and ')' in work_location:
+        work_style = work_location[work_location.rfind('(')+1:work_location.rfind(')')]
+        work_location = work_location[:work_location.rfind('(')].strip()
     
     # Skip if previously rejected due to blacklist or already applied
     if company in blacklisted_companies:
@@ -865,7 +875,9 @@ def discard_job() -> None:
 
 # Function to apply to jobs
 def apply_to_jobs(search_terms: list[str]) -> None:
-    applied_jobs = get_applied_job_ids()
+    applied_jobs, applied_job_fingerprints = load_applied_jobs_history(file_name)
+    if not applied_jobs:
+        print_lg(f"The CSV file '{file_name}' does not exist or has no applied job IDs.")
     rejected_jobs = set()
     blacklisted_companies = set()
     global current_city, failed_count, skip_count, easy_applied_count, external_jobs_count, tabs_count, pause_before_submit, pause_at_failed_question, useNewResume
@@ -900,9 +912,21 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                     job_id,title,company,work_location,work_style,skip = get_job_main_details(job, blacklisted_companies, rejected_jobs)
                     
                     if skip: continue
+                    previous_application = find_previously_applied_match(job_id, title, company, applied_jobs, applied_job_fingerprints)
+                    if previous_application:
+                        if previous_application["match_type"] == "job_id":
+                            print_lg(f'Already applied to "{title} | {company}" job. Job ID: {job_id}!')
+                        else:
+                            print_lg(
+                                f'Skipping likely duplicate "{title} | {company}" job. Job ID: {job_id}. '
+                                f'Matched previous "{previous_application["title"]} | {previous_application["company"]}" '
+                                f'job ID: {previous_application["job_id"]} '
+                                f'(title similarity {previous_application["similarity"]:.0%}).'
+                            )
+                        continue
                     # Redundant fail safe check for applied jobs!
                     try:
-                        if job_id in applied_jobs or find_by_class(driver, "jobs-s-apply__application-link", 2):
+                        if normalize_job_id(job_id) in applied_jobs or find_by_class(driver, "jobs-s-apply__application-link", 2):
                             print_lg(f'Already applied to "{title} | {company}" job. Job ID: {job_id}!')
                             continue
                     except Exception as e:
@@ -1121,7 +1145,10 @@ def apply_to_jobs(search_terms: list[str]) -> None:
                     current_count += 1
                     if application_link == "Easy Applied": easy_applied_count += 1
                     else:   external_jobs_count += 1
-                    applied_jobs.add(job_id)
+                    normalized_job_id = normalize_job_id(job_id)
+                    if normalized_job_id:
+                        applied_jobs.add(normalized_job_id)
+                    applied_job_fingerprints.append(make_applied_job_fingerprint(job_id, title, company))
 
 
 
@@ -1175,7 +1202,7 @@ def main() -> None:
     pyautogui.alert("Please consider sponsoring this project at:\n\nhttps://github.com/sponsors/GodsScion\n\n", "Support the project", "Okay")
     total_runs = 1
     try:
-        global linkedIn_tab, tabs_count, useNewResume, aiClient
+        global linkedIn_tab, tabs_count, useNewResume, aiClient, keep_browser_open_on_exit
         alert_title = "Error Occurred. Closing Browser!"
         validate_config()
         
@@ -1186,7 +1213,12 @@ def main() -> None:
         # Login to LinkedIn
         tabs_count = len(driver.window_handles)
         driver.get("https://www.linkedin.com/login")
-        if not is_logged_in_LN(): login_LN()
+        if not is_logged_in_LN() and not login_LN():
+            keep_browser_open_on_exit = True
+            msg = "LinkedIn login was not confirmed. The browser will be left open so you can finish logging in manually. Run the bot again after LinkedIn shows your feed."
+            print_lg(msg)
+            pyautogui.alert(msg, "Login Required", "OK")
+            return
         
         linkedIn_tab = driver.current_window_handle
 
@@ -1202,13 +1234,13 @@ def main() -> None:
         #     except Exception as e:
         #         print_lg("Opening OpenAI chatGPT tab failed!")
         if use_AI:
-            if ai_provider == "openai":
+            if ai_provider.lower() == "openai":
                 aiClient = ai_create_openai_client()
             ##> ------ Yang Li : MARKYangL - Feature ------
             # Create DeepSeek client
-            elif ai_provider == "deepseek":
+            elif ai_provider.lower() == "deepseek":
                 aiClient = deepseek_create_client()
-            elif ai_provider == "gemini":
+            elif ai_provider.lower() == "gemini":
                 aiClient = gemini_create_client()
             ##<
 
@@ -1294,7 +1326,10 @@ def main() -> None:
         ##<
         try:
             if driver:
-                driver.quit()
+                if keep_browser_open_on_exit:
+                    print_lg("Leaving browser open because LinkedIn login was not confirmed.")
+                else:
+                    driver.quit()
         except WebDriverException as e:
             print_lg("Browser already closed.", e)
         except Exception as e: 
